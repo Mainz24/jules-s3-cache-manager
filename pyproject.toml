@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "s3-cache-manager"
+version = "0.1.0"
+description = "Async S3 cache client using aiobotocore and Pydantic v2 with two-tier testing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Jules" }
+]
+dependencies = [
+    "aiobotocore>=2.13.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "types-botocore",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/s3_cache"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+markers = [
+    "e2e: End-to-end integration tests requiring real S3 service",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = []
+
+[tool.coverage.run]
+source = ["s3_cache"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
