@@ -1,5 +1,6 @@
 import os
 from collections.abc import AsyncGenerator
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -31,34 +32,54 @@ def e2e_config() -> S3CacheConfig:
         S3_ACCESS_KEY_ID=os.getenv("S3_ACCESS_KEY_ID", "minioadmin"),
         S3_SECRET_ACCESS_KEY=os.getenv("S3_SECRET_ACCESS_KEY", "minioadmin"),
         S3_REGION=os.getenv("S3_REGION", "us-east-1"),
+        S3_DEFAULT_BUCKET=os.getenv("S3_DEFAULT_BUCKET", "s3-cache"),
     )
 
 
 @pytest.fixture(scope="function")
-async def isolated_bucket(e2e_config: S3CacheConfig) -> AsyncGenerator[str, None]:
+async def isolated_bucket(
+    e2e_config: S3CacheConfig,
+) -> AsyncGenerator[tuple[str, str], None]:
     """
-    Session / Function fixture creating a dynamic isolated S3 bucket for testing,
-    and strictly tearing it down (deleting objects, aborting multipart uploads, deleting bucket,
-    verifying 404 via head_bucket) in a finally block.
+    Fixture providing an isolated bucket and key prefix for E2E testing.
+    Attempts CreateBucket first; if forbidden/AccessDenied or if S3_TEST_BUCKET / S3_DEFAULT_BUCKET
+    is specified, falls back to pre-existing bucket with an isolated test run key prefix.
     """
     endpoint_url = os.getenv("S3_ENDPOINT_URL", "").strip()
     if not endpoint_url:
         pytest.skip("S3_ENDPOINT_URL environment variable is not set.")
 
-    prefix = os.getenv("S3_TEST_BUCKET_PREFIX", "test-jules")
-    bucket_name = f"{prefix}-{uuid4().hex[:8]}"
+    prefix_setting = os.getenv("S3_TEST_BUCKET_PREFIX", "test-jules")
+    test_bucket_override = (
+        os.getenv("S3_TEST_BUCKET", "").strip() or os.getenv("S3_DEFAULT_BUCKET", "").strip()
+    )
 
     client = await create_aiobotocore_client(e2e_config)
-    await client.create_bucket(Bucket=bucket_name)
+
+    created_bucket = False
+    bucket_name = f"{prefix_setting}-{uuid4().hex[:8]}"
+    key_prefix = ""
+
+    if test_bucket_override:
+        bucket_name = test_bucket_override
+        key_prefix = f"t-jules-{uuid4().hex[:8]}/"
+    else:
+        try:
+            await client.create_bucket(Bucket=bucket_name)
+            created_bucket = True
+        except Exception:
+            bucket_name = e2e_config.default_bucket or "s3-cache"
+            key_prefix = f"t-jules-{uuid4().hex[:8]}/"
 
     try:
-        yield bucket_name
+        yield bucket_name, key_prefix
     finally:
         try:
-            # 1. Paginate and delete all objects in chunks of 1000
             continuation_token = None
             while True:
-                kwargs = {"Bucket": bucket_name}
+                kwargs: dict[str, Any] = {"Bucket": bucket_name}
+                if key_prefix:
+                    kwargs["Prefix"] = key_prefix
                 if continuation_token:
                     kwargs["ContinuationToken"] = continuation_token
 
@@ -78,30 +99,28 @@ async def isolated_bucket(e2e_config: S3CacheConfig) -> AsyncGenerator[str, None
                 else:
                     break
 
-            # 2. Abort any incomplete multipart uploads
             mp_resp = await client.list_multipart_uploads(Bucket=bucket_name)
             for upload in mp_resp.get("Uploads", []):
-                key = upload.get("Key")
+                key = upload.get("Key", "")
                 upload_id = upload.get("UploadId")
-                if key and upload_id:
+                if upload_id and (not key_prefix or key.startswith(key_prefix)):
                     await client.abort_multipart_upload(
                         Bucket=bucket_name, Key=key, UploadId=upload_id
                     )
 
-            # 3. Delete bucket
-            await client.delete_bucket(Bucket=bucket_name)
-
-            # 4. Verify 404 storage leak check
-            with pytest.raises(S3BucketNotFoundError):
-                await client.head_bucket(Bucket=bucket_name)
+            if created_bucket:
+                await client.delete_bucket(Bucket=bucket_name)
+                with pytest.raises(S3BucketNotFoundError):
+                    await client.head_bucket(Bucket=bucket_name)
         finally:
             await client.close()
 
 
 @pytest.fixture(scope="function")
 async def e2e_manager(
-    e2e_config: S3CacheConfig, isolated_bucket: str
+    e2e_config: S3CacheConfig, isolated_bucket: tuple[str, str]
 ) -> AsyncGenerator[S3CacheManager, None]:
+    bucket_name, key_prefix = isolated_bucket
     config = S3CacheConfig(
         S3_ENDPOINT_URL=e2e_config.endpoint_url,
         S3_ACCESS_KEY_ID=(
@@ -113,7 +132,8 @@ async def e2e_manager(
             else None
         ),
         S3_REGION=e2e_config.region,
-        S3_DEFAULT_BUCKET=isolated_bucket,
+        S3_DEFAULT_BUCKET=bucket_name,
+        S3_KEY_PREFIX=key_prefix,
     )
     async with S3CacheManager(config=config) as mgr:
         yield mgr

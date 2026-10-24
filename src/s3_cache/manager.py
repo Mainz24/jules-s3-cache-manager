@@ -96,6 +96,9 @@ class S3CacheManager:
             raise ValueError("No bucket specified and no default_bucket configured.")
         return target
 
+    def _full_key(self, key: str) -> str:
+        return f"{self.config.key_prefix}{key}"
+
     async def _execute_with_retry(self, func: Callable[[], Awaitable[T]]) -> T:
         return await retry_async(
             func,
@@ -114,6 +117,7 @@ class S3CacheManager:
         validate_key(key)
         client = self._ensure_client()
         target_bucket = self._get_bucket(bucket)
+        full_key = self._full_key(key)
 
         now = self._clock()
         if now.tzinfo is None:
@@ -139,7 +143,7 @@ class S3CacheManager:
         async def _op() -> None:
             await client.put_object(
                 Bucket=target_bucket,
-                Key=key,
+                Key=full_key,
                 Body=raw_bytes,
                 Metadata=s3_metadata,
             )
@@ -157,9 +161,10 @@ class S3CacheManager:
         validate_key(key)
         client = self._ensure_client()
         target_bucket = self._get_bucket(bucket)
+        full_key = self._full_key(key)
 
         async def _op() -> dict[str, Any]:
-            return await client.get_object(Bucket=target_bucket, Key=key)
+            return await client.get_object(Bucket=target_bucket, Key=full_key)
 
         try:
             response = await self._execute_with_retry(_op)
@@ -207,9 +212,10 @@ class S3CacheManager:
         validate_key(key)
         client = self._ensure_client()
         target_bucket = self._get_bucket(bucket)
+        full_key = self._full_key(key)
 
         async def _op() -> dict[str, Any]:
-            return await client.head_object(Bucket=target_bucket, Key=key)
+            return await client.head_object(Bucket=target_bucket, Key=full_key)
 
         try:
             response = await self._execute_with_retry(_op)
@@ -232,10 +238,11 @@ class S3CacheManager:
         validate_key(key)
         client = self._ensure_client()
         target_bucket = self._get_bucket(bucket)
+        full_key = self._full_key(key)
 
         async def _op() -> None:
             try:
-                await client.delete_object(Bucket=target_bucket, Key=key)
+                await client.delete_object(Bucket=target_bucket, Key=full_key)
             except (S3CacheError, ClientError) as exc:
                 if "NoSuchKey" in str(exc) or "404" in str(exc):
                     return
@@ -252,6 +259,7 @@ class S3CacheManager:
         """Garbage collect expired items in bucket matching prefix."""
         client = self._ensure_client()
         target_bucket = self._get_bucket(bucket)
+        full_prefix = self._full_key(prefix)
 
         now = self._clock()
         semaphore = asyncio.Semaphore(concurrency)
@@ -260,7 +268,7 @@ class S3CacheManager:
         continuation_token: str | None = None
 
         while True:
-            list_kwargs: dict[str, Any] = {"Bucket": target_bucket, "Prefix": prefix}
+            list_kwargs: dict[str, Any] = {"Bucket": target_bucket, "Prefix": full_prefix}
             if continuation_token:
                 list_kwargs["ContinuationToken"] = continuation_token
 
@@ -273,6 +281,7 @@ class S3CacheManager:
             async def _check_key(k: str) -> str | None:
                 async with semaphore:
                     try:
+
                         async def _head_op(item_key: str = k) -> dict[str, Any]:
                             return await client.head_object(Bucket=target_bucket, Key=item_key)
 

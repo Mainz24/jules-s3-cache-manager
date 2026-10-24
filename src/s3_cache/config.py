@@ -1,4 +1,3 @@
-
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,3 +21,4 @@ class S3CacheConfig(BaseSettings):
     connect_timeout: float = Field(default=5.0, alias="S3_CONNECT_TIMEOUT")
     read_timeout: float = Field(default=10.0, alias="S3_READ_TIMEOUT")
     max_retries: int = Field(default=3, alias="S3_MAX_RETRIES")
+    key_prefix: str = Field(default="", alias="S3_KEY_PREFIX")
